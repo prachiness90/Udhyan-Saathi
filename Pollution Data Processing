@@ -1,0 +1,134 @@
+import os
+import glob
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+
+# Define Path
+base_path = 'F:/Education/COLLEGE/PROGRAMING/Python/PROJECTS/PrachiNCUProject/Data'
+
+class Silver:
+    @staticmethod
+    def Datacleansing(year, month, day):
+        input_path = os.path.join(base_path, 'Bronze', year, month, day)
+        csv_files = glob.glob(input_path + "/*.csv")
+        if not csv_files:
+            print(f"No CSV files found for {year}-{month}-{day}")
+            return None
+
+        df_list = []
+        for file in csv_files:
+            try:
+                df = pd.read_csv(file)
+                allowed_columns = [
+                    'country', 'state', 'city', 'station', 'last_update', 
+                    'pollutant_id', 'pollutant_min', 'pollutant_max', 
+                    'pollutant_avg', 'longitude', 'latitude'
+                ]
+                if set(allowed_columns).issubset(df.columns):
+                    file_date = pd.to_datetime(df['last_update'], format="%d-%m-%Y %H:%M:%S").dt.date.iloc[0]
+                    if file_date == datetime(int(year), int(month), int(day)).date():
+                        df_list.append(df)
+            except Exception as e:
+                print(f"Error processing file {file}: {e}")
+
+        if not df_list:
+            return None
+
+        output_path = os.path.join(base_path, 'Silver', year, month, day)
+        os.makedirs(output_path, exist_ok=True)
+
+        combined_df = pd.concat(df_list, ignore_index=True)
+        combined_df = combined_df.rename(columns={
+            "country": "Country", "state": "State", "city": "City", 
+            "station": "Station", "pollutant_id": "Pollutant_Type", 
+            "pollutant_avg": "Pollutant_Avg", "pollutant_max": "Pollutant_Max",
+            "longitude": "Longitude", "latitude": "Latitude"
+        })
+        combined_df["Date"] = pd.to_datetime(combined_df["last_update"], format="%d-%m-%Y %H:%M:%S").dt.date
+        combined_df = combined_df.groupby([
+            "Country", "State", "City", "Station", "Date", 
+            "Pollutant_Type", "Longitude", "Latitude"
+        ]).agg({"Pollutant_Avg": "mean", "Pollutant_Max": "max"}).reset_index()
+        combined_df["Pollutant_Avg"] = combined_df["Pollutant_Avg"].round(2)
+        combined_df["Pollutant_Max"] = combined_df["Pollutant_Max"].round(2)
+        combined_df["Pollutant_Data"] = combined_df.apply(
+            lambda row: row["Pollutant_Max"] if row["Pollutant_Type"] in ["OZONE1", "CO1"] else row["Pollutant_Avg"], axis=1
+        )
+
+        output_file_path = os.path.join(output_path, f'Silver_pollutiondata_{year}{month}{day}.csv')
+        combined_df.to_csv(output_file_path, index=False)
+        return combined_df
+
+class Gold:
+    @staticmethod
+    def DataTransformation(year, month, day):
+        input_path = os.path.join(base_path, 'Silver', year, month, day)
+        csv_files = glob.glob(input_path + "/*.csv")
+        if not csv_files:
+            return None
+
+        df_list = [pd.read_csv(file) for file in csv_files]
+        combined_df = pd.concat(df_list, ignore_index=True)
+
+        final_df = combined_df.pivot_table(
+            index=["State", "City", "Station", "Date", "Longitude", "Latitude"],
+            columns='Pollutant_Type', values='Pollutant_Data', fill_value=0
+        ).reset_index()
+        final_df["Checks"] = (final_df[["PM2.5", "PM10", "SO2", "NO2", "NH3", "CO", "OZONE"]] > 0).sum(axis=1)
+        final_df["AQI"] = final_df[["PM2.5", "PM10", "SO2", "NO2", "NH3", "CO", "OZONE"]].max(axis=1)
+        final_df.loc[final_df.Checks < 3, "AQI"] = np.NaN
+
+        def get_AQI_bucket(x):
+            if x <= 50: return "Good"
+            elif x <= 100: return "Satisfactory"
+            elif x <= 200: return "Moderate"
+            elif x <= 300: return "Poor"
+            elif x <= 400: return "Very Poor"
+            else: return "Severe"
+
+        final_df["AQI_Quality"] = final_df["AQI"].apply(get_AQI_bucket)
+        final_df = final_df.dropna(subset=['AQI'])
+
+        # Create output directory only if data is valid
+        output_path = os.path.join(base_path, 'Gold', year, month, day)
+        os.makedirs(output_path, exist_ok=True)
+
+        output_file_path = os.path.join(output_path, f'Gold_pollutiondata_{year}{month}{day}.csv')
+        final_df.to_csv(output_file_path, index=False)
+        return final_df
+
+class Platinum:
+    @staticmethod
+    def FinalData(year, month, day):
+        input_path = os.path.join(base_path, 'Gold', year, month, day)
+        csv_files = glob.glob(input_path + "/*.csv")
+        if not csv_files:
+            return None
+
+        final_df = pd.concat((pd.read_csv(file) for file in csv_files), ignore_index=True)
+
+        # Create output directory only if data is valid
+        output_path = os.path.join(base_path, 'Platinum')
+        os.makedirs(output_path, exist_ok=True)
+
+        output_file_path = os.path.join(output_path, 'pollutiondata_Final.csv')
+        final_df.to_csv(output_file_path, mode='a', index=False, header=not os.path.exists(output_file_path))
+        return final_df
+
+# Process All Dates from 2024
+for year in range(2024, datetime.now().year + 1):
+    for month in range(1, 13):
+        for day in range(1, 32):
+            try:
+                year, month, day = str(year), f'{month}', f'{day}'
+                print(f"Processing data for {year}-{month}-{day}")
+                silver_data = Silver.Datacleansing(year, month, day)
+                if silver_data is not None:
+                    gold_data = Gold.DataTransformation(year, month, day)
+                    if gold_data is not None:
+                        platinum_data = Platinum.FinalData(year, month, day)
+            except Exception as e:
+                print(f"Error processing {year}-{month}-{day}: {e}")
